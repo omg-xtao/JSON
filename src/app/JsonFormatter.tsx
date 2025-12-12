@@ -75,18 +75,26 @@ type JsonValueType =
   | "boolean"
   | "null";
 
+type JsonGraphRow = {
+  key: string;
+  value: string;
+  childId?: string;
+};
+
 type JsonGraphNode = {
   id: string;
   label: string;
   path: string;
   type: JsonValueType;
-  preview: string;
+  summary: string;
+  rows: JsonGraphRow[];
   depth: number;
 };
 
-type JsonGraphEdge = { from: string; to: string };
+type JsonGraphEdge = { from: string; to: string; fromRow: number };
 
 type JsonGraph = {
+  rootId: string;
   nodes: JsonGraphNode[];
   edges: JsonGraphEdge[];
   truncated: boolean;
@@ -125,11 +133,18 @@ function jsonPathAppend(path: string, key: string | number): string {
   return `${path}[${JSON.stringify(key)}]`;
 }
 
+function isContainer(
+  value: unknown,
+): value is unknown[] | Record<string, unknown> {
+  return Array.isArray(value) || isPlainObject(value);
+}
+
 function buildJsonGraph(
   root: unknown,
   options: { maxDepth: number; maxNodes: number; maxChildrenPerNode: number },
 ): JsonGraph {
   const nodes: JsonGraphNode[] = [];
+  const nodesById = new Map<string, JsonGraphNode>();
   const edges: JsonGraphEdge[] = [];
   let truncated = false;
 
@@ -143,14 +158,17 @@ function buildJsonGraph(
     depth: number,
   ): string {
     const id = `n${nextId++}`;
-    nodes.push({
+    const node: JsonGraphNode = {
       id,
       label,
       path,
       depth,
       type: jsonValueType(value),
-      preview: jsonPreview(value),
-    });
+      summary: jsonPreview(value),
+      rows: [],
+    };
+    nodes.push(node);
+    nodesById.set(id, node);
     return id;
   }
 
@@ -165,63 +183,109 @@ function buildJsonGraph(
   while (queue.length > 0) {
     const current = queue.shift();
     if (!current) break;
-    if (current.depth >= maxDepth) continue;
-    if (nodes.length >= maxNodes) {
-      truncated = true;
-      break;
-    }
 
     const { id: parentId, value, path, depth } = current;
+    const node = nodesById.get(parentId);
+    if (!node) continue;
+
+    if (!isContainer(value)) continue;
+
+    const rows: JsonGraphRow[] = [];
+
     if (Array.isArray(value)) {
       const visible = Math.min(value.length, maxChildrenPerNode);
       if (value.length > visible) truncated = true;
+
       for (let i = 0; i < visible; i++) {
-        if (nodes.length >= maxNodes) {
-          truncated = true;
-          break;
-        }
         const childValue = value[i];
-        const childPath = jsonPathAppend(path, i);
-        const childId = pushNode(`[${i}]`, childPath, childValue, depth + 1);
-        edges.push({ from: parentId, to: childId });
-        queue.push({
-          id: childId,
-          value: childValue,
-          path: childPath,
-          depth: depth + 1,
+        const rowIndex = rows.length;
+        let childId: string | undefined;
+
+        if (
+          isContainer(childValue) &&
+          depth < maxDepth &&
+          nodes.length < maxNodes
+        ) {
+          const childPath = jsonPathAppend(path, i);
+          childId = pushNode(`[${i}]`, childPath, childValue, depth + 1);
+          edges.push({ from: parentId, to: childId, fromRow: rowIndex });
+          queue.push({
+            id: childId,
+            value: childValue,
+            path: childPath,
+            depth: depth + 1,
+          });
+        } else if (
+          isContainer(childValue) &&
+          (depth >= maxDepth || nodes.length >= maxNodes)
+        ) {
+          truncated = true;
+        }
+
+        rows.push({ key: String(i), value: jsonPreview(childValue), childId });
+      }
+
+      if (value.length > visible) {
+        rows.push({
+          key: "…",
+          value: `+${(value.length - visible).toLocaleString()} 更多`,
         });
       }
+
+      node.rows = rows;
       continue;
     }
 
     if (isPlainObject(value)) {
       let shown = 0;
+      let hasMore = false;
+
       for (const key in value) {
         if (!Object.hasOwn(value, key)) continue;
         if (shown >= maxChildrenPerNode) {
+          hasMore = true;
           truncated = true;
           break;
         }
-        if (nodes.length >= maxNodes) {
-          truncated = true;
-          break;
-        }
+
         const childValue = value[key];
-        const childPath = jsonPathAppend(path, key);
-        const childId = pushNode(key, childPath, childValue, depth + 1);
-        edges.push({ from: parentId, to: childId });
-        queue.push({
-          id: childId,
-          value: childValue,
-          path: childPath,
-          depth: depth + 1,
-        });
+        const rowIndex = rows.length;
+        let childId: string | undefined;
+
+        if (
+          isContainer(childValue) &&
+          depth < maxDepth &&
+          nodes.length < maxNodes
+        ) {
+          const childPath = jsonPathAppend(path, key);
+          childId = pushNode(key, childPath, childValue, depth + 1);
+          edges.push({ from: parentId, to: childId, fromRow: rowIndex });
+          queue.push({
+            id: childId,
+            value: childValue,
+            path: childPath,
+            depth: depth + 1,
+          });
+        } else if (
+          isContainer(childValue) &&
+          (depth >= maxDepth || nodes.length >= maxNodes)
+        ) {
+          truncated = true;
+        }
+
+        rows.push({ key, value: jsonPreview(childValue), childId });
         shown++;
       }
+
+      if (hasMore) {
+        rows.push({ key: "…", value: "更多字段…" });
+      }
+
+      node.rows = rows;
     }
   }
 
-  return { nodes, edges, truncated };
+  return { rootId, nodes, edges, truncated };
 }
 
 type Rect = { x: number; y: number; w: number; h: number };
@@ -237,34 +301,93 @@ function layoutJsonGraph(graph: JsonGraph): GraphLayout {
   const rects = new Map<string, Rect>();
   const nodesById = new Map<string, JsonGraphNode>();
 
-  const nodeWidth = 180;
-  const nodeHeight = 54;
-  const xGap = 90;
-  const yGap = 18;
+  const nodeWidth = 280;
+  const headerHeight = 26;
+  const rowHeight = 18;
+  const paddingY = 10;
+
+  const xGap = 120;
+  const yGap = 26;
   const padding = 28;
 
-  const levels = new Map<number, JsonGraphNode[]>();
   for (const node of graph.nodes) {
     nodesById.set(node.id, node);
-    const bucket = levels.get(node.depth) ?? [];
-    bucket.push(node);
-    levels.set(node.depth, bucket);
   }
 
-  const depths = [...levels.keys()].sort((a, b) => a - b);
-  for (const depth of depths) {
-    const nodesAtDepth = levels.get(depth);
-    if (!nodesAtDepth) continue;
-    nodesAtDepth.sort((a, b) => a.path.localeCompare(b.path));
-    for (let i = 0; i < nodesAtDepth.length; i++) {
-      const node = nodesAtDepth[i];
-      rects.set(node.id, {
+  const childrenByParent = new Map<string, JsonGraphEdge[]>();
+  for (const edge of graph.edges) {
+    const bucket = childrenByParent.get(edge.from) ?? [];
+    bucket.push(edge);
+    childrenByParent.set(edge.from, bucket);
+  }
+  for (const bucket of childrenByParent.values()) {
+    bucket.sort((a, b) => a.fromRow - b.fromRow);
+  }
+
+  function measureNodeHeight(node: JsonGraphNode): number {
+    return paddingY * 2 + headerHeight + node.rows.length * rowHeight;
+  }
+
+  let nextY = padding;
+  const visited = new Set<string>();
+
+  function dfs(
+    nodeId: string,
+    depth: number,
+  ): { top: number; bottom: number; center: number } {
+    const node = nodesById.get(nodeId);
+    if (!node) return { top: 0, bottom: 0, center: 0 };
+    if (visited.has(nodeId)) return { top: 0, bottom: 0, center: 0 };
+    visited.add(nodeId);
+
+    const h = measureNodeHeight(node);
+    const children = childrenByParent.get(nodeId) ?? [];
+
+    if (children.length === 0) {
+      const y = nextY;
+      rects.set(nodeId, {
         x: padding + depth * (nodeWidth + xGap),
-        y: padding + i * (nodeHeight + yGap),
+        y,
         w: nodeWidth,
-        h: nodeHeight,
+        h,
       });
+      nextY += h + yGap;
+      return { top: y, bottom: y + h, center: y + h / 2 };
     }
+
+    const childInfos: Array<{ top: number; bottom: number; center: number }> =
+      [];
+    for (const edge of children) {
+      childInfos.push(dfs(edge.to, depth + 1));
+    }
+
+    const first = childInfos[0];
+    const last = childInfos[childInfos.length - 1];
+    const center =
+      first && last ? (first.center + last.center) / 2 : nextY + h / 2;
+    const y = center - h / 2;
+
+    rects.set(nodeId, {
+      x: padding + depth * (nodeWidth + xGap),
+      y,
+      w: nodeWidth,
+      h,
+    });
+
+    const top = Math.min(y, ...childInfos.map((c) => c.top));
+    const bottom = Math.max(y + h, ...childInfos.map((c) => c.bottom));
+    return { top, bottom, center: y + h / 2 };
+  }
+
+  if (graph.nodes.length > 0) {
+    dfs(graph.rootId, 0);
+  }
+
+  for (const node of graph.nodes) {
+    if (rects.has(node.id)) continue;
+    const h = measureNodeHeight(node);
+    rects.set(node.id, { x: padding, y: nextY, w: nodeWidth, h });
+    nextY += h + yGap;
   }
 
   let minX = Number.POSITIVE_INFINITY;
@@ -390,20 +513,35 @@ function JsonCanvas({ graph }: { graph: JsonGraph | null }) {
     ctx.translate(view.offsetX, view.offsetY);
     ctx.scale(view.scale, view.scale);
 
+    const headerHeight = 26;
+    const rowHeight = 18;
+    const paddingX = 12;
+    const paddingY = 10;
+    const radius = 12;
+    const portRadius = 3.5;
+
     const lineWidth = 1 / view.scale;
     ctx.lineWidth = lineWidth;
     ctx.strokeStyle = colors.edge;
 
     for (const edge of layout.edges) {
-      const from = layout.rects.get(edge.from);
-      const to = layout.rects.get(edge.to);
-      if (!from || !to) continue;
+      const fromRect = layout.rects.get(edge.from);
+      const toRect = layout.rects.get(edge.to);
+      const fromNode = layout.nodesById.get(edge.from);
+      if (!fromRect || !toRect || !fromNode) continue;
+      if (edge.fromRow < 0 || edge.fromRow >= fromNode.rows.length) continue;
 
-      const fromX = from.x + from.w;
-      const fromY = from.y + from.h / 2;
-      const toX = to.x;
-      const toY = to.y + to.h / 2;
-      const midX = (fromX + toX) / 2;
+      const fromX = fromRect.x + fromRect.w;
+      const fromY =
+        fromRect.y +
+        paddingY +
+        headerHeight +
+        edge.fromRow * rowHeight +
+        rowHeight / 2;
+
+      const toX = toRect.x;
+      const toY = toRect.y + paddingY + headerHeight / 2;
+      const midX = fromX + (toX - fromX) * 0.5;
 
       ctx.beginPath();
       ctx.moveTo(fromX, fromY);
@@ -411,7 +549,7 @@ function JsonCanvas({ graph }: { graph: JsonGraph | null }) {
       ctx.stroke();
     }
 
-    ctx.textBaseline = "alphabetic";
+    ctx.textBaseline = "middle";
 
     for (const [id, rect] of layout.rects.entries()) {
       const node = layout.nodesById.get(id);
@@ -422,7 +560,6 @@ function JsonCanvas({ graph }: { graph: JsonGraph | null }) {
       ctx.strokeStyle = isSelected ? colors.highlight : colors.nodeBorder;
       ctx.lineWidth = isSelected ? 2 / view.scale : lineWidth;
 
-      const radius = 10;
       ctx.beginPath();
       ctx.moveTo(rect.x + radius, rect.y);
       ctx.lineTo(rect.x + rect.w - radius, rect.y);
@@ -452,23 +589,95 @@ function JsonCanvas({ graph }: { graph: JsonGraph | null }) {
       ctx.fill();
       ctx.stroke();
 
-      ctx.fillStyle = colors.nodeText;
+      const isRoot = graph?.rootId === id;
+
+      const titleY = rect.y + paddingY + headerHeight / 2;
       ctx.font =
         '12px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace';
-      const label =
-        node.label.length > 26 ? `${node.label.slice(0, 26)}…` : node.label;
-      ctx.fillText(label, rect.x + 10, rect.y + 20);
+      ctx.fillStyle = colors.nodeText;
+      ctx.textAlign = "left";
+      const title =
+        node.label.length > 34 ? `${node.label.slice(0, 34)}…` : node.label;
+      ctx.fillText(title, rect.x + paddingX, titleY);
 
+      ctx.textAlign = "right";
       ctx.fillStyle = colors.nodeSubText;
+      const summary =
+        node.summary.length > 18
+          ? `${node.summary.slice(0, 18)}…`
+          : node.summary;
+      ctx.fillText(summary, rect.x + rect.w - paddingX, titleY);
+      ctx.textAlign = "left";
+
+      ctx.strokeStyle = colors.edge;
+      ctx.lineWidth = lineWidth;
+      ctx.beginPath();
+      ctx.moveTo(rect.x + lineWidth, rect.y + paddingY + headerHeight);
+      ctx.lineTo(rect.x + rect.w - lineWidth, rect.y + paddingY + headerHeight);
+      ctx.stroke();
+
+      const keyColor = isDark
+        ? "rgba(248,113,113,0.95)"
+        : "rgba(220,38,38,0.95)";
+      const valueColor = isDark
+        ? "rgba(147,197,253,0.95)"
+        : "rgba(37,99,235,0.95)";
+
       ctx.font =
         '11px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace';
-      const preview =
-        node.preview.length > 40
-          ? `${node.preview.slice(0, 40)}…`
-          : node.preview;
-      ctx.fillText(preview, rect.x + 10, rect.y + 40);
+
+      const maxKeyChars = 16;
+      const maxValueChars = 36;
+
+      for (let i = 0; i < node.rows.length; i++) {
+        const row = node.rows[i];
+        const rowY =
+          rect.y + paddingY + headerHeight + i * rowHeight + rowHeight / 2;
+
+        ctx.fillStyle = keyColor;
+        const key =
+          row.key.length > maxKeyChars
+            ? `${row.key.slice(0, maxKeyChars)}…`
+            : row.key;
+        ctx.fillText(key, rect.x + paddingX, rowY);
+
+        ctx.textAlign = "right";
+        ctx.fillStyle = valueColor;
+        const reservedRight = row.childId ? 14 : 0;
+        const rawValue = row.value;
+        const valueText =
+          rawValue.length > maxValueChars
+            ? `${rawValue.slice(0, maxValueChars)}…`
+            : rawValue;
+        ctx.fillText(
+          valueText,
+          rect.x + rect.w - paddingX - reservedRight,
+          rowY,
+        );
+        ctx.textAlign = "left";
+
+        if (row.childId) {
+          ctx.fillStyle = colors.nodeBorder;
+          ctx.beginPath();
+          ctx.arc(rect.x + rect.w, rowY, portRadius, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      if (!isRoot) {
+        ctx.fillStyle = colors.nodeBorder;
+        ctx.beginPath();
+        ctx.arc(
+          rect.x,
+          rect.y + paddingY + headerHeight / 2,
+          portRadius,
+          0,
+          Math.PI * 2,
+        );
+        ctx.fill();
+      }
     }
-  }, [layout, selectedId, view, width, height]);
+  }, [layout, selectedId, view, width, height, graph?.rootId]);
 
   function screenToWorld(
     screenX: number,
@@ -603,7 +812,7 @@ function JsonCanvas({ graph }: { graph: JsonGraph | null }) {
             {selectedNode.path}
           </div>
           <div className="mt-1 truncate text-zinc-600 dark:text-zinc-400">
-            {selectedNode.type} · {selectedNode.preview}
+            {selectedNode.type} · {selectedNode.summary}
           </div>
         </div>
       ) : null}
