@@ -26,11 +26,25 @@ export type JsonGraphNode = {
 
 export type JsonGraphEdge = { from: string; to: string; fromRow: number };
 
+export type JsonGraphTruncatedBy = {
+  depth: boolean;
+  nodes: boolean;
+  children: boolean;
+};
+
 export type JsonGraph = {
   rootId: string;
   nodes: JsonGraphNode[];
   edges: JsonGraphEdge[];
   truncated: boolean;
+  truncatedBy: JsonGraphTruncatedBy;
+};
+
+type QueueItem = {
+  id: string;
+  value: unknown;
+  path: string;
+  depth: number;
 };
 
 function jsonValueType(value: unknown): JsonValueType {
@@ -80,9 +94,19 @@ export function buildJsonGraph(
   const nodesById = new Map<string, JsonGraphNode>();
   const edges: JsonGraphEdge[] = [];
   let truncated = false;
+  const truncatedBy: JsonGraphTruncatedBy = {
+    depth: false,
+    nodes: false,
+    children: false,
+  };
 
   const { maxDepth, maxNodes, maxChildrenPerNode } = options;
   let nextId = 0;
+
+  function markTruncated(reason: keyof JsonGraphTruncatedBy) {
+    truncated = true;
+    truncatedBy[reason] = true;
+  }
 
   function pushNode(
     label: string,
@@ -105,18 +129,42 @@ export function buildJsonGraph(
     return id;
   }
 
+  function tryAddChild(
+    parentId: string,
+    rowIndex: number,
+    label: string,
+    childPath: string,
+    childValue: unknown,
+    depth: number,
+    queue: QueueItem[],
+  ): string | undefined {
+    if (!isContainer(childValue)) return undefined;
+
+    if (depth >= maxDepth) {
+      markTruncated("depth");
+      return undefined;
+    }
+    if (nodes.length >= maxNodes) {
+      markTruncated("nodes");
+      return undefined;
+    }
+
+    const childId = pushNode(label, childPath, childValue, depth + 1);
+    edges.push({ from: parentId, to: childId, fromRow: rowIndex });
+    queue.push({
+      id: childId,
+      value: childValue,
+      path: childPath,
+      depth: depth + 1,
+    });
+    return childId;
+  }
+
   const rootId = pushNode("$", "$", root, 0);
-  const queue: Array<{
-    id: string;
-    value: unknown;
-    path: string;
-    depth: number;
-  }> = [{ id: rootId, value: root, path: "$", depth: 0 }];
+  const queue: QueueItem[] = [{ id: rootId, value: root, path: "$", depth: 0 }];
 
-  while (queue.length > 0) {
-    const current = queue.shift();
-    if (!current) break;
-
+  for (let qi = 0; qi < queue.length; qi++) {
+    const current = queue[qi];
     const { id: parentId, value, path, depth } = current;
     const node = nodesById.get(parentId);
     if (!node) continue;
@@ -127,33 +175,23 @@ export function buildJsonGraph(
 
     if (Array.isArray(value)) {
       const visible = Math.min(value.length, maxChildrenPerNode);
-      if (value.length > visible) truncated = true;
+      if (value.length > visible) {
+        markTruncated("children");
+      }
 
       for (let i = 0; i < visible; i++) {
         const childValue = value[i];
         const rowIndex = rows.length;
-        let childId: string | undefined;
-
-        if (
-          isContainer(childValue) &&
-          depth < maxDepth &&
-          nodes.length < maxNodes
-        ) {
-          const childPath = jsonPathAppend(path, i);
-          childId = pushNode(`[${i}]`, childPath, childValue, depth + 1);
-          edges.push({ from: parentId, to: childId, fromRow: rowIndex });
-          queue.push({
-            id: childId,
-            value: childValue,
-            path: childPath,
-            depth: depth + 1,
-          });
-        } else if (
-          isContainer(childValue) &&
-          (depth >= maxDepth || nodes.length >= maxNodes)
-        ) {
-          truncated = true;
-        }
+        const childPath = jsonPathAppend(path, i);
+        const childId = tryAddChild(
+          parentId,
+          rowIndex,
+          `[${i}]`,
+          childPath,
+          childValue,
+          depth,
+          queue,
+        );
 
         rows.push({ key: String(i), value: jsonPreview(childValue), childId });
       }
@@ -177,34 +215,22 @@ export function buildJsonGraph(
         if (!Object.hasOwn(value, key)) continue;
         if (shown >= maxChildrenPerNode) {
           hasMore = true;
-          truncated = true;
+          markTruncated("children");
           break;
         }
 
         const childValue = value[key];
         const rowIndex = rows.length;
-        let childId: string | undefined;
-
-        if (
-          isContainer(childValue) &&
-          depth < maxDepth &&
-          nodes.length < maxNodes
-        ) {
-          const childPath = jsonPathAppend(path, key);
-          childId = pushNode(key, childPath, childValue, depth + 1);
-          edges.push({ from: parentId, to: childId, fromRow: rowIndex });
-          queue.push({
-            id: childId,
-            value: childValue,
-            path: childPath,
-            depth: depth + 1,
-          });
-        } else if (
-          isContainer(childValue) &&
-          (depth >= maxDepth || nodes.length >= maxNodes)
-        ) {
-          truncated = true;
-        }
+        const childPath = jsonPathAppend(path, key);
+        const childId = tryAddChild(
+          parentId,
+          rowIndex,
+          key,
+          childPath,
+          childValue,
+          depth,
+          queue,
+        );
 
         rows.push({ key, value: jsonPreview(childValue), childId });
         shown++;
@@ -218,5 +244,5 @@ export function buildJsonGraph(
     }
   }
 
-  return { rootId, nodes, edges, truncated };
+  return { rootId, nodes, edges, truncated, truncatedBy };
 }

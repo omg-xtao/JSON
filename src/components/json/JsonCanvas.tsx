@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useElementSize } from "./hooks/useElementSize";
 import type { JsonGraph } from "./lib/jsonGraph";
 import { layoutJsonGraph } from "./lib/jsonLayout";
@@ -13,6 +13,16 @@ export function JsonCanvas({ graph }: { graph: JsonGraph | null }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const { width, height } = useElementSize(containerRef);
+  const rootId = graph?.rootId ?? null;
+
+  const truncationHint = useMemo(() => {
+    if (!graph?.truncated) return null;
+    const reasons: string[] = [];
+    if (graph.truncatedBy.children) reasons.push("行数");
+    if (graph.truncatedBy.nodes) reasons.push("节点数");
+    if (graph.truncatedBy.depth) reasons.push("深度");
+    return reasons.length > 0 ? reasons.join(" / ") : "限制";
+  }, [graph]);
 
   const layout = useMemo(() => {
     if (!graph) return null;
@@ -35,7 +45,7 @@ export function JsonCanvas({ graph }: { graph: JsonGraph | null }) {
     return layout.nodesById.get(selectedId) ?? null;
   }, [layout, selectedId]);
 
-  useEffect(() => {
+  const fitToLayout = useCallback(() => {
     if (!layout || width <= 0 || height <= 0) return;
     const { bounds } = layout;
     const worldWidth = Math.max(1, bounds.maxX - bounds.minX);
@@ -48,7 +58,11 @@ export function JsonCanvas({ graph }: { graph: JsonGraph | null }) {
     const nextOffsetY = padding - bounds.minY * nextScale;
     setView({ offsetX: nextOffsetX, offsetY: nextOffsetY, scale: nextScale });
     setSelectedId(null);
-  }, [layout, width, height]);
+  }, [height, layout, width]);
+
+  useEffect(() => {
+    fitToLayout();
+  }, [fitToLayout]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -163,7 +177,7 @@ export function JsonCanvas({ graph }: { graph: JsonGraph | null }) {
       ctx.fill();
       ctx.stroke();
 
-      const isRoot = graph?.rootId === id;
+      const isRoot = rootId === id;
 
       const titleY = rect.y + paddingY + headerHeight / 2;
       ctx.font =
@@ -251,7 +265,7 @@ export function JsonCanvas({ graph }: { graph: JsonGraph | null }) {
         ctx.fill();
       }
     }
-  }, [layout, selectedId, view, width, height, graph?.rootId]);
+  }, [layout, rootId, selectedId, view, width, height]);
 
   function screenToWorld(
     screenX: number,
@@ -340,18 +354,7 @@ export function JsonCanvas({ graph }: { graph: JsonGraph | null }) {
   }
 
   function handleReset() {
-    if (!layout) return;
-    const { bounds } = layout;
-    const padding = 36;
-    const worldWidth = Math.max(1, bounds.maxX - bounds.minX);
-    const worldHeight = Math.max(1, bounds.maxY - bounds.minY);
-    const scaleX = (width - padding * 2) / worldWidth;
-    const scaleY = (height - padding * 2) / worldHeight;
-    const nextScale = clamp(Math.min(scaleX, scaleY, 1), 0.2, 2);
-    const nextOffsetX = padding - bounds.minX * nextScale;
-    const nextOffsetY = padding - bounds.minY * nextScale;
-    setView({ offsetX: nextOffsetX, offsetY: nextOffsetY, scale: nextScale });
-    setSelectedId(null);
+    fitToLayout();
   }
 
   return (
@@ -376,7 +379,8 @@ export function JsonCanvas({ graph }: { graph: JsonGraph | null }) {
 
       {graph?.truncated ? (
         <div className="absolute left-3 top-3 rounded-full border border-zinc-200 bg-white/90 px-3 py-1 text-xs text-zinc-700 shadow-sm backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/80 dark:text-zinc-200">
-          已截断：仅展示前 {graph.nodes.length.toLocaleString()} 个节点
+          已截断：受 {truncationHint} 限制 {"·"}{" "}
+          {graph.nodes.length.toLocaleString()} 节点
         </div>
       ) : null}
 

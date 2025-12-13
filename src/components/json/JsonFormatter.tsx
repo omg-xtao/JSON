@@ -1,7 +1,7 @@
 "use client";
 
+import type { editor as MonacoEditorNamespace } from "monaco-editor";
 import { type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
-
 import { JsonCanvas } from "./JsonCanvas";
 import { buildJsonGraph } from "./lib/jsonGraph";
 import {
@@ -11,10 +11,30 @@ import {
   normalizeJsonText,
   sortKeysDeep,
 } from "./lib/jsonUtils";
+import { MonacoJsonEditor } from "./MonacoJsonEditor";
 
 type IndentOption = "2" | "4" | "tab";
 type OutputKind = "formatted" | "minified" | null;
 type RightPane = "canvas" | "output";
+type GraphPreset = "default" | "more" | "all";
+
+type MonacoEditor = MonacoEditorNamespace.IStandaloneCodeEditor;
+
+type GraphOptions = {
+  maxDepth: number;
+  maxNodes: number;
+  maxChildrenPerNode: number;
+};
+
+const GRAPH_PRESETS: Record<GraphPreset, GraphOptions> = {
+  default: { maxDepth: 6, maxNodes: 240, maxChildrenPerNode: 30 },
+  more: { maxDepth: 12, maxNodes: 3000, maxChildrenPerNode: 200 },
+  all: {
+    maxDepth: Number.POSITIVE_INFINITY,
+    maxNodes: Number.POSITIVE_INFINITY,
+    maxChildrenPerNode: Number.POSITIVE_INFINITY,
+  },
+};
 
 export function JsonFormatter() {
   const [input, setInput] = useState<string>("");
@@ -26,15 +46,17 @@ export function JsonFormatter() {
   );
   const [indent, setIndent] = useState<IndentOption>("2");
   const [sortKeys, setSortKeys] = useState<boolean>(false);
+  const [graphPreset, setGraphPreset] = useState<GraphPreset>("default");
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [timingMs, setTimingMs] = useState<number | null>(null);
   const [inputFileName, setInputFileName] = useState<string | null>(null);
   const [inputFileBytes, setInputFileBytes] = useState<number | null>(null);
 
-  const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const messageTimerRef = useRef<number | null>(null);
+  const inputEditorRef = useRef<MonacoEditor | null>(null);
+  const outputEditorRef = useRef<MonacoEditor | null>(null);
 
   useEffect(() => {
     return () => {
@@ -44,10 +66,9 @@ export function JsonFormatter() {
     };
   }, []);
 
-  const indentValue = useMemo(() => {
-    if (indent === "tab") return "\t";
-    return Number(indent);
-  }, [indent]);
+  const indentValue = indent === "tab" ? "\t" : Number(indent);
+  const tabSize = indent === "4" ? 4 : 2;
+  const insertSpaces = indent !== "tab";
 
   const stats = useMemo(() => {
     const inputBytes = new Blob([input]).size;
@@ -55,14 +76,12 @@ export function JsonFormatter() {
     return { inputBytes, outputBytes };
   }, [input, output]);
 
+  const graphOptions = GRAPH_PRESETS[graphPreset];
+
   const graph = useMemo(() => {
     if (parsedValue === undefined) return null;
-    return buildJsonGraph(parsedValue, {
-      maxDepth: 6,
-      maxNodes: 240,
-      maxChildrenPerNode: 30,
-    });
-  }, [parsedValue]);
+    return buildJsonGraph(parsedValue, graphOptions);
+  }, [parsedValue, graphOptions]);
 
   function parseOrThrow() {
     const normalized = normalizeJsonText(input);
@@ -70,6 +89,10 @@ export function JsonFormatter() {
       throw new Error("输入为空：请粘贴或上传 JSON。");
     }
     return { normalized, value: JSON.parse(normalized) as unknown };
+  }
+
+  function focusInputEditor() {
+    inputEditorRef.current?.focus();
   }
 
   function flash(nextMessage: string) {
@@ -95,6 +118,12 @@ export function JsonFormatter() {
           position,
         );
         setError(`${unknownError.message}（第 ${line} 行，第 ${column} 列）`);
+        const editor = inputEditorRef.current;
+        if (editor) {
+          editor.focus();
+          editor.setPosition({ lineNumber: line, column });
+          editor.revealPositionInCenter({ lineNumber: line, column });
+        }
         return;
       }
       setError(unknownError.message);
@@ -104,56 +133,45 @@ export function JsonFormatter() {
     setError("解析失败：未知错误。");
   }
 
-  function handleFormat() {
+  function handleFormatOrMinify(kind: Exclude<OutputKind, null>) {
     setError(null);
     setMessage(null);
     setTimingMs(null);
     setOutputKind(null);
 
     const start = performance.now();
+    let normalized: string | undefined;
     try {
-      const { value } = parseOrThrow();
+      const parsed = parseOrThrow();
+      normalized = parsed.normalized;
+      const { value } = parsed;
       const valueForOutput = sortKeys ? sortKeysDeep(value) : value;
-      const formatted = JSON.stringify(valueForOutput, null, indentValue);
-      setOutput(`${formatted}\n`);
-      setOutputKind("formatted");
+
+      const nextOutput =
+        kind === "formatted"
+          ? JSON.stringify(valueForOutput, null, indentValue)
+          : JSON.stringify(valueForOutput);
+
+      setOutput(`${nextOutput}\n`);
+      setOutputKind(kind);
       setParsedValue(valueForOutput);
       setTimingMs(performance.now() - start);
-      inputRef.current?.focus();
+      focusInputEditor();
     } catch (unknownError) {
-      const normalized = normalizeJsonText(input);
       setOutput("");
       setOutputKind(null);
       setParsedValue(undefined);
       setTimingMs(performance.now() - start);
-      setErrorFromUnknown(unknownError, normalized);
+      setErrorFromUnknown(unknownError, normalized ?? normalizeJsonText(input));
     }
   }
 
-  function handleMinify() {
-    setError(null);
-    setMessage(null);
-    setTimingMs(null);
-    setOutputKind(null);
+  function handleFormat() {
+    handleFormatOrMinify("formatted");
+  }
 
-    const start = performance.now();
-    try {
-      const { value } = parseOrThrow();
-      const valueForOutput = sortKeys ? sortKeysDeep(value) : value;
-      const minified = JSON.stringify(valueForOutput);
-      setOutput(`${minified}\n`);
-      setOutputKind("minified");
-      setParsedValue(valueForOutput);
-      setTimingMs(performance.now() - start);
-      inputRef.current?.focus();
-    } catch (unknownError) {
-      const normalized = normalizeJsonText(input);
-      setOutput("");
-      setOutputKind(null);
-      setParsedValue(undefined);
-      setTimingMs(performance.now() - start);
-      setErrorFromUnknown(unknownError, normalized);
-    }
+  function handleMinify() {
+    handleFormatOrMinify("minified");
   }
 
   function handleValidate() {
@@ -162,17 +180,20 @@ export function JsonFormatter() {
     setTimingMs(null);
 
     const start = performance.now();
+    let normalized: string | undefined;
     try {
-      const { value } = parseOrThrow();
-      setParsedValue(sortKeys ? sortKeysDeep(value) : value);
+      const parsed = parseOrThrow();
+      normalized = parsed.normalized;
+      const { value } = parsed;
+      const valueForOutput = sortKeys ? sortKeysDeep(value) : value;
+      setOutputKind(null);
+      setParsedValue(valueForOutput);
       setTimingMs(performance.now() - start);
-      setError(null);
       flash("JSON 校验通过。");
     } catch (unknownError) {
-      const normalized = normalizeJsonText(input);
       setParsedValue(undefined);
       setTimingMs(performance.now() - start);
-      setErrorFromUnknown(unknownError, normalized);
+      setErrorFromUnknown(unknownError, normalized ?? normalizeJsonText(input));
     }
   }
 
@@ -186,7 +207,7 @@ export function JsonFormatter() {
     setParsedValue(undefined);
     setInputFileName(null);
     setInputFileBytes(null);
-    inputRef.current?.focus();
+    focusInputEditor();
   }
 
   async function writeToClipboard(text: string) {
@@ -249,7 +270,7 @@ export function JsonFormatter() {
       setInputFileName(null);
       setInputFileBytes(null);
       flash("已从剪贴板粘贴到输入。");
-      inputRef.current?.focus();
+      focusInputEditor();
     } catch {
       setError("粘贴失败：浏览器未授予剪贴板权限。");
     }
@@ -277,7 +298,7 @@ export function JsonFormatter() {
       setInputFileName(file.name);
       setInputFileBytes(file.size);
       flash(`已加载：${file.name}（${formatBytes(file.size)}）`);
-      inputRef.current?.focus();
+      focusInputEditor();
     } catch {
       setError("读取文件失败：请确认文件可访问且为文本 JSON。");
     }
@@ -308,6 +329,18 @@ export function JsonFormatter() {
     a.remove();
     URL.revokeObjectURL(url);
     flash("已开始下载输出文件。");
+  }
+
+  async function runOutputAction(actionId: string) {
+    const editor = outputEditorRef.current;
+    if (!editor) return;
+    const action = editor.getAction(actionId);
+    if (!action) return;
+    try {
+      await action.run();
+    } catch {
+      // ignore
+    }
   }
 
   return (
@@ -430,21 +463,30 @@ export function JsonFormatter() {
             </button>
           </div>
 
-          <textarea
-            ref={inputRef}
-            className="min-h-0 flex-1 resize-none bg-white p-3 font-mono text-sm leading-6 text-zinc-900 outline-none placeholder:text-zinc-400 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-600"
-            value={input}
-            onChange={(e) => {
-              setInput(e.target.value);
-              setParsedValue(undefined);
-              setError(null);
-              setMessage(null);
-              setOutputKind(null);
-            }}
-            placeholder="在这里粘贴 JSON（支持很大的 JSON），或用“上传”导入文件。"
-            spellCheck={false}
-            wrap="off"
-          />
+          <div className="relative min-h-0 flex-1">
+            <MonacoJsonEditor
+              className="h-full w-full"
+              value={input}
+              onChange={(next) => {
+                setInput(next);
+                setParsedValue(undefined);
+                setError(null);
+                setMessage(null);
+                setOutputKind(null);
+              }}
+              ariaLabel="JSON input"
+              tabSize={tabSize}
+              insertSpaces={insertSpaces}
+              onMountEditor={(editor) => {
+                inputEditorRef.current = editor;
+              }}
+            />
+            {!input ? (
+              <div className="pointer-events-none absolute left-3 top-3 select-none text-sm text-zinc-400 dark:text-zinc-500">
+                在这里粘贴 JSON（支持很大的 JSON），或用“上传”导入文件。
+              </div>
+            ) : null}
+          </div>
         </section>
 
         <section className="flex min-h-0 flex-col">
@@ -474,6 +516,42 @@ export function JsonFormatter() {
               </button>
             </div>
 
+            {rightPane === "canvas" ? (
+              <label className="inline-flex items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400">
+                <span>画布</span>
+                <select
+                  className="h-8 rounded-full border border-zinc-200 bg-white px-3 text-xs text-zinc-900 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
+                  value={graphPreset}
+                  onChange={(e) =>
+                    setGraphPreset(e.target.value as GraphPreset)
+                  }
+                >
+                  <option value="default">默认</option>
+                  <option value="more">更多</option>
+                  <option value="all">全部（谨慎）</option>
+                </select>
+              </label>
+            ) : (
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="inline-flex h-8 shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-white px-3 text-xs font-medium text-zinc-900 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-900"
+                  onClick={() => runOutputAction("editor.foldAll")}
+                  disabled={!output}
+                >
+                  折叠
+                </button>
+                <button
+                  type="button"
+                  className="inline-flex h-8 shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-white px-3 text-xs font-medium text-zinc-900 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-900"
+                  onClick={() => runOutputAction("editor.unfoldAll")}
+                  disabled={!output}
+                >
+                  展开
+                </button>
+              </div>
+            )}
+
             <div className="ml-auto flex items-center gap-2">
               <button
                 type="button"
@@ -496,14 +574,24 @@ export function JsonFormatter() {
 
           <div className="min-h-0 flex-1">
             {rightPane === "output" ? (
-              <textarea
-                className="h-full w-full resize-none bg-zinc-50 p-3 font-mono text-sm leading-6 text-zinc-900 outline-none placeholder:text-zinc-400 dark:bg-black dark:text-zinc-100 dark:placeholder:text-zinc-600"
-                value={output}
-                readOnly
-                placeholder="格式化/压缩结果会显示在这里。"
-                spellCheck={false}
-                wrap="off"
-              />
+              <div className="relative h-full w-full">
+                <MonacoJsonEditor
+                  className="h-full w-full"
+                  value={output}
+                  readOnly
+                  ariaLabel="JSON output"
+                  tabSize={tabSize}
+                  insertSpaces={insertSpaces}
+                  onMountEditor={(editor) => {
+                    outputEditorRef.current = editor;
+                  }}
+                />
+                {!output ? (
+                  <div className="pointer-events-none absolute left-3 top-3 select-none text-sm text-zinc-400 dark:text-zinc-500">
+                    格式化/压缩结果会显示在这里。
+                  </div>
+                ) : null}
+              </div>
             ) : (
               <JsonCanvas graph={graph} />
             )}
