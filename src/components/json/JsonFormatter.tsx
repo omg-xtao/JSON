@@ -3,11 +3,13 @@
 import {
   CheckCircle2,
   ClipboardPaste,
+  Code,
   EllipsisVertical,
   Minimize2,
   Moon,
   Sun,
   Trash2,
+  Undo2,
   Upload,
 } from "lucide-react";
 import type { editor as MonacoEditorNamespace } from "monaco-editor";
@@ -17,16 +19,18 @@ import { JsonFlowCanvas } from "./flow/JsonFlowCanvas";
 import { JsonCanvas } from "./JsonCanvas";
 import { buildJsonGraph } from "./lib/jsonGraph";
 import {
+  escapeJsonString,
   extractJsonErrorPosition,
   formatBytes,
   indexToLineColumn,
   normalizeJsonText,
   sortKeysDeep,
+  unescapeJsonString,
 } from "./lib/jsonUtils";
 import { MonacoJsonEditor } from "./MonacoJsonEditor";
 
 type IndentOption = "2" | "4" | "tab";
-type OutputKind = "formatted" | "minified" | null;
+type OutputKind = "formatted" | "minified" | "escaped" | "unescaped" | null;
 type RightPane = "canvas" | "output";
 type GraphPreset = "default" | "more" | "all";
 type CanvasMode = "flow" | "native";
@@ -48,6 +52,13 @@ const GRAPH_PRESETS: Record<GraphPreset, GraphOptions> = {
     maxNodes: Number.POSITIVE_INFINITY,
     maxChildrenPerNode: Number.POSITIVE_INFINITY,
   },
+};
+
+const OUTPUT_KIND_LABELS: Record<NonNullable<OutputKind>, string> = {
+  formatted: "已格式化",
+  minified: "已压缩",
+  escaped: "已转义",
+  unescaped: "已反转义",
 };
 
 export function JsonFormatter() {
@@ -151,7 +162,7 @@ export function JsonFormatter() {
     setError("解析失败：未知错误。");
   }
 
-  function handleFormatOrMinify(kind: Exclude<OutputKind, null>) {
+  function handleFormatOrMinify(kind: "formatted" | "minified") {
     setError(null);
     setMessage(null);
     setTimingMs(null);
@@ -190,6 +201,64 @@ export function JsonFormatter() {
 
   function handleMinify() {
     handleFormatOrMinify("minified");
+  }
+
+  function handleEscape() {
+    setError(null);
+    setMessage(null);
+    setTimingMs(null);
+    setOutputKind(null);
+
+    const start = performance.now();
+    try {
+      if (!input.trim()) {
+        throw new Error("输入为空：请粘贴或上传 JSON。");
+      }
+      const escaped = escapeJsonString(input);
+      setOutput(`${escaped}\n`);
+      setOutputKind("escaped");
+      setParsedValue(undefined);
+      setTimingMs(performance.now() - start);
+      flash("已转义。");
+    } catch (unknownError) {
+      setOutput("");
+      setOutputKind(null);
+      setParsedValue(undefined);
+      setTimingMs(performance.now() - start);
+      setErrorFromUnknown(unknownError);
+    }
+  }
+
+  function handleUnescape() {
+    setError(null);
+    setMessage(null);
+    setTimingMs(null);
+    setOutputKind(null);
+
+    const start = performance.now();
+    try {
+      if (!input.trim()) {
+        throw new Error("输入为空：请粘贴或上传 JSON。");
+      }
+      const unescaped = unescapeJsonString(input);
+      setOutput(`${unescaped}\n`);
+      setOutputKind("unescaped");
+      let nextParsed: unknown | undefined;
+      try {
+        nextParsed = JSON.parse(normalizeJsonText(unescaped));
+      } catch {
+        nextParsed = undefined;
+      }
+      setParsedValue(nextParsed);
+      setTimingMs(performance.now() - start);
+      flash(nextParsed ? "已反转义并解析。" : "已反转义。");
+    } catch (unknownError) {
+      setOutput("");
+      setOutputKind(null);
+      setParsedValue(undefined);
+      setTimingMs(performance.now() - start);
+      setErrorFromUnknown(unknownError);
+    }
   }
 
   function handleValidate() {
@@ -323,14 +392,25 @@ export function JsonFormatter() {
   }
 
   function buildDownloadName(): string {
-    const base = inputFileName
-      ? inputFileName.replace(/\\.json$/i, "")
-      : outputKind === "minified"
+    const baseFromInput = inputFileName
+      ? inputFileName.replace(/\.json$/i, "")
+      : null;
+
+    const fallbackBase =
+      outputKind === "minified"
         ? "minified"
-        : "formatted";
+        : outputKind === "escaped"
+          ? "escaped"
+          : outputKind === "unescaped"
+            ? "unescaped"
+            : "formatted";
+
+    const base = baseFromInput ?? fallbackBase;
 
     if (outputKind === "minified") return `${base}.min.json`;
     if (outputKind === "formatted") return `${base}.formatted.json`;
+    if (outputKind === "escaped") return `${base}.escaped.txt`;
+    if (outputKind === "unescaped") return `${base}.unescaped.json`;
     return `${base}.json`;
   }
 
@@ -434,6 +514,22 @@ export function JsonFormatter() {
           <button
             type="button"
             className="inline-flex h-8 shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-white px-3 text-xs font-medium text-zinc-900 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-900"
+            onClick={handleEscape}
+            disabled={!input.trim()}
+          >
+            转义
+          </button>
+          <button
+            type="button"
+            className="inline-flex h-8 shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-white px-3 text-xs font-medium text-zinc-900 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-900"
+            onClick={handleUnescape}
+            disabled={!input.trim()}
+          >
+            反转义
+          </button>
+          <button
+            type="button"
+            className="inline-flex h-8 shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-white px-3 text-xs font-medium text-zinc-900 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-900"
             onClick={handleValidate}
             disabled={!input.trim()}
           >
@@ -524,6 +620,30 @@ export function JsonFormatter() {
           >
             <Minimize2 className="h-4 w-4 text-zinc-500" aria-hidden="true" />
             压缩
+          </button>
+          <button
+            type="button"
+            className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-medium text-zinc-900 hover:bg-zinc-100 active:bg-zinc-200 disabled:opacity-50 dark:text-zinc-100 dark:hover:bg-zinc-800"
+            onClick={() => {
+              handleEscape();
+              setMobileMenuOpen(false);
+            }}
+            disabled={!input.trim()}
+          >
+            <Code className="h-4 w-4 text-zinc-500" aria-hidden="true" />
+            转义
+          </button>
+          <button
+            type="button"
+            className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-medium text-zinc-900 hover:bg-zinc-100 active:bg-zinc-200 disabled:opacity-50 dark:text-zinc-100 dark:hover:bg-zinc-800"
+            onClick={() => {
+              handleUnescape();
+              setMobileMenuOpen(false);
+            }}
+            disabled={!input.trim()}
+          >
+            <Undo2 className="h-4 w-4 text-zinc-500" aria-hidden="true" />
+            反转义
           </button>
           <button
             type="button"
@@ -797,7 +917,7 @@ export function JsonFormatter() {
                 />
                 {!output ? (
                   <div className="pointer-events-none absolute left-3 top-3 select-none text-sm text-zinc-400 dark:text-zinc-500">
-                    格式化/压缩结果会显示在这里。
+                    格式化/压缩/转义结果会显示在这里。
                   </div>
                 ) : null}
               </div>
@@ -826,7 +946,7 @@ export function JsonFormatter() {
           ) : null}
           {outputKind ? (
             <span className="hidden sm:inline">
-              {outputKind === "formatted" ? "已格式化" : "已压缩"}
+              {OUTPUT_KIND_LABELS[outputKind]}
             </span>
           ) : null}
         </div>

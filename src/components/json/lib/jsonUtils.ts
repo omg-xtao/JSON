@@ -53,3 +53,18 @@ export function sortKeysDeep(value: unknown): unknown {
   }
   return sorted;
 }
+
+export function escapeJsonString(text: string): string {
+  return JSON.stringify(text).slice(1, -1);
+}
+
+export function unescapeJsonString(text: string): string {
+  try {
+    return JSON.parse(`"${text}"`);
+  } catch (error) {
+    if (error instanceof Error) {
+      throw new Error(`反转义失败：${error.message}`);
+    }
+    throw new Error("反转义失败：未知错误。");
+  }
+}
