@@ -34,7 +34,7 @@ export function JsonFormatter() {
   const [wordWrap, setWordWrap] = useState(false);
   const [lineNumberMode, setLineNumberMode] = useState<
     "off" | "focus" | "full"
-  >("off");
+  >("focus");
   const { theme, toggleTheme } = useTheme();
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
