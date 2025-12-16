@@ -31,6 +31,7 @@ type MonacoEditor = MonacoEditorNamespace.IStandaloneCodeEditor;
 
 export function JsonFormatter() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [wordWrap, setWordWrap] = useState(false);
   const { theme, toggleTheme } = useTheme();
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -275,6 +276,21 @@ export function JsonFormatter() {
             <Minimize2 className="h-4 w-4 text-zinc-500" aria-hidden="true" />
             压缩
           </button>
+          <div className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-zinc-900 dark:text-zinc-100">
+            <input
+              type="checkbox"
+              className="h-4 w-4 accent-zinc-900 dark:accent-zinc-100"
+              checked={wordWrap}
+              onChange={(e) => setWordWrap(e.target.checked)}
+              id="mobile-word-wrap"
+            />
+            <label
+              className="flex-1 cursor-pointer select-none"
+              htmlFor="mobile-word-wrap"
+            >
+              自动换行
+            </label>
+          </div>
           <button
             type="button"
             className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-medium text-zinc-900 hover:bg-zinc-100 active:bg-zinc-200 disabled:opacity-50 dark:text-zinc-100 dark:hover:bg-zinc-800"
@@ -418,6 +434,15 @@ export function JsonFormatter() {
               />
               <span>排序 key</span>
             </label>
+            <label className="hidden items-center gap-2 text-xs text-zinc-600 sm:inline-flex dark:text-zinc-400">
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-zinc-900 dark:accent-zinc-100"
+                checked={wordWrap}
+                onChange={(e) => setWordWrap(e.target.checked)}
+              />
+              <span>自动换行</span>
+            </label>
 
             <button
               type="button"
@@ -439,6 +464,7 @@ export function JsonFormatter() {
               ariaLabel="JSON input"
               tabSize={tabSize}
               insertSpaces={insertSpaces}
+              wordWrap={wordWrap ? "on" : "off"}
               onMountEditor={(editor) => {
                 inputEditorRef.current = editor;
               }}
@@ -563,6 +589,7 @@ export function JsonFormatter() {
                   ariaLabel="JSON output"
                   tabSize={tabSize}
                   insertSpaces={insertSpaces}
+                  wordWrap={wordWrap ? "on" : "off"}
                   onMountEditor={(editor) => {
                     outputEditorRef.current = editor;
                   }}

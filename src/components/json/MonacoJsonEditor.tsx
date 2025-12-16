@@ -18,6 +18,7 @@ export type MonacoJsonEditorProps = {
   onMountEditor?: (editor: MonacoEditor) => void;
   tabSize?: number;
   insertSpaces?: boolean;
+  wordWrap?: "on" | "off";
 };
 
 export function MonacoJsonEditor({
@@ -29,6 +30,7 @@ export function MonacoJsonEditor({
   onMountEditor,
   tabSize = 2,
   insertSpaces = true,
+  wordWrap = "off",
 }: MonacoJsonEditorProps) {
   const { theme } = useTheme();
   const monacoTheme = theme === "dark" ? "vs-dark" : "vs";
@@ -50,7 +52,7 @@ export function MonacoJsonEditor({
       automaticLayout: true,
       scrollBeyondLastLine: false,
       lineNumbers: isMobile ? "off" : "on",
-      wordWrap: isMobile ? "on" : "off",
+      wordWrap,
       tabSize,
       insertSpaces,
       folding: true,
@@ -67,7 +69,7 @@ export function MonacoJsonEditor({
       lineHeight: isMobile ? 22 : undefined,
       padding: isMobile ? { top: 12, bottom: 12 } : undefined,
     } as const;
-  }, [insertSpaces, readOnly, tabSize, isMobile]);
+  }, [insertSpaces, isMobile, readOnly, tabSize, wordWrap]);
 
   return (
     <div className={className}>
