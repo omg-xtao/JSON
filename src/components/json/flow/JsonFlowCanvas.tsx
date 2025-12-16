@@ -13,6 +13,7 @@ import ELK from "elkjs/lib/elk.bundled.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTheme } from "@/components/ui/ThemeProvider";
 import type { JsonGraph } from "../lib/jsonGraph";
+import styles from "./JsonFlowCanvas.module.css";
 import { JsonFlowNode, type JsonFlowNodeData } from "./JsonFlowNode";
 
 const nodeTypes: NodeTypes = { jsonNode: JsonFlowNode };
@@ -135,12 +136,15 @@ export function JsonFlowCanvas({ graph }: { graph: JsonGraph | null }) {
   }
 
   return (
-    <div className="relative h-full w-full">
+    <div className={`${styles.flowWrapper} relative h-full w-full`}>
       <ReactFlow
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
         fitView
+        style={{
+          background: theme === "dark" ? "#0b0b0f" : "#f8fafc",
+        }}
         onInit={(rf) => {
           rfRef.current = rf;
         }}

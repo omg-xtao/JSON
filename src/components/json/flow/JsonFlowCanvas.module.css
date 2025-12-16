@@ -1,0 +1,27 @@
+.flowWrapper .react-flow__controls {
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+  border: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.flowWrapper .react-flow__controls-button {
+  background: color-mix(in srgb, var(--background) 88%, transparent);
+  border: none;
+  color: currentColor;
+}
+
+.flowWrapper .react-flow__controls-button:hover {
+  background: color-mix(in srgb, var(--background) 76%, transparent);
+}
+
+.dark .flowWrapper .react-flow__controls-button,
+[data-theme="dark"] .flowWrapper .react-flow__controls-button {
+  color: #e4e4e7;
+  background: rgba(24, 24, 27, 0.8);
+}
+
+.dark .flowWrapper .react-flow__controls-button:hover,
+[data-theme="dark"] .flowWrapper .react-flow__controls-button:hover {
+  background: rgba(39, 39, 42, 0.9);
+}
